@@ -1,13 +1,20 @@
-# Core
+# Core cheminformatics
 rdkit>=2023.3.1
 
-# Optional: docking
-# autodock-vina>=1.2.3   # pip install vina
-# openbabel>=3.1.1       # conda install -c conda-forge openbabel
+# Streamlit UI
+streamlit>=1.32.0
 
-# Optional: RL generative model (REINVENT-style)
+# Data + plotting
+pandas>=2.0.0
+numpy>=1.24.0
+altair>=5.0.0
+
+# HTTP (ChEMBL API downloads)
+requests>=2.31.0
+
+# Optional: RL generative mode
 # torch>=2.0.0
-# numpy>=1.24
 
-# Dev / testing
-pytest>=7.0
+# Optional: docking
+# vina>=1.2.3
+# openbabel>=3.1.1

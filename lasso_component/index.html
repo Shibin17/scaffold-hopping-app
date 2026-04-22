@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #f8f9fa;
+    font-family: Arial, sans-serif;
+    user-select: none;
+  }
+
+  #root {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0;
+  }
+
+  #canvas-wrap {
+    position: relative;
+    background: #ffffff;
+    border: 1.5px solid #dee2e6;
+    border-bottom: none;
+    border-radius: 8px 8px 0 0;
+    overflow: hidden;
+    cursor: crosshair;
+  }
+
+  #svg-layer {
+    position: absolute;
+    top: 0; left: 0;
+    pointer-events: none;
+  }
+
+  #draw-canvas {
+    position: absolute;
+    top: 0; left: 0;
+  }
+
+  #toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: #f0f4f8;
+    border: 1.5px solid #dee2e6;
+    border-top: 1px solid #e2e8f0;
+    border-radius: 0 0 8px 8px;
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .btn {
+    padding: 4px 12px;
+    border: none;
+    border-radius: 5px;
+    font-size: 12px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: opacity .15s;
+  }
+  .btn:hover { opacity: .85; }
+  .btn:active { opacity: .7; }
+
+  #btn-confirm  { background: #2ecc71; color: #fff; }
+  #btn-clear    { background: #e74c3c; color: #fff; }
+  #btn-invert   { background: #3498db; color: #fff; }
+  #btn-rings    { background: #9b59b6; color: #fff; }
+  #btn-murcko   { background: #e67e22; color: #fff; }
+  #btn-aromatic { background: #1abc9c; color: #fff; }
+
+  #sel-label {
+    flex: 1;
+    font-size: 11px;
+    color: #2c3e50;
+    font-family: monospace;
+    min-width: 120px;
+  }
+
+  #hint {
+    font-size: 10px;
+    color: #95a5a6;
+    margin-left: auto;
+  }
+</style>
+</head>
+<body>
+<div id="root">
+  <div id="canvas-wrap">
+    <div id="svg-layer"></div>
+    <canvas id="draw-canvas"></canvas>
+  </div>
+  <div id="toolbar">
+    <button class="btn" id="btn-confirm" onclick="confirmSelection()">✔ Confirm</button>
+    <button class="btn" id="btn-clear"   onclick="clearAll()">✕ Clear</button>
+    <button class="btn" id="btn-invert"  onclick="invertSelection()">⇄ Invert</button>
+    <button class="btn" id="btn-rings"   onclick="selectRings()">⬡ Rings</button>
+    <button class="btn" id="btn-murcko"  onclick="selectMurcko()">◎ Murcko</button>
+    <button class="btn" id="btn-aromatic" onclick="selectAromatic()">✦ Aromatic</button>
+    <span id="sel-label">No atoms selected</span>
+    <span id="hint">Draw lasso · click atoms</span>
+  </div>
+</div>
+
+<script>
+/* ── Streamlit component bridge ───────────────────────────────────────── */
+const Streamlit = {
+  _ready: false,
+  sendComponentReady() {
+    window.parent.postMessage({ type: "streamlit:componentReady", apiVersion: 1 }, "*");
+  },
+  setComponentValue(val) {
+    window.parent.postMessage({ type: "streamlit:setComponentValue", value: val }, "*");
+  },
+  setFrameHeight(h) {
+    window.parent.postMessage({ type: "streamlit:setFrameHeight", height: h }, "*");
+  }
+};
+
+window.addEventListener("message", (e) => {
+  if (e.data.type === "streamlit:render") {
+    const args = e.data.args || {};
+    init(args);
+  }
+});
+
+/* ── State ────────────────────────────────────────────────────────────── */
+let W = 500, H = 380;
+let atomPositions   = [];   // [{x, y, symbol, isAromatic, inRing}]
+let ringAtomSets    = [];   // [[idx,...], ...]  — ring membership
+let murckoAtoms     = [];   // atom indices in Murcko scaffold
+let selected        = new Set();
+let lassoPath       = [];
+let isDrawing       = false;
+let canvas, ctx;
+
+/* ── Initialise ───────────────────────────────────────────────────────── */
+function init(args) {
+  W = args.width  || 500;
+  H = args.height || 380;
+  atomPositions = args.atom_positions || [];
+  ringAtomSets  = args.ring_atom_sets || [];
+  murckoAtoms   = args.murcko_atoms   || [];
+
+  document.getElementById("canvas-wrap").style.width  = W + "px";
+  document.getElementById("canvas-wrap").style.height = H + "px";
+
+  const svgLayer = document.getElementById("svg-layer");
+  svgLayer.innerHTML = args.svg || "";
+  const svgEl = svgLayer.querySelector("svg");
+  if (svgEl) {
+    svgEl.setAttribute("width",  W);
+    svgEl.setAttribute("height", H);
+    svgEl.style.width  = W + "px";
+    svgEl.style.height = H + "px";
+  }
+
+  canvas = document.getElementById("draw-canvas");
+  canvas.width  = W;
+  canvas.height = H;
+  ctx = canvas.getContext("2d");
+
+  // Restore previous selection if passed back
+  selected = new Set(args.current_selection || []);
+
+  bindEvents();
+  redraw();
+
+  const totalH = H + 44;
+  document.getElementById("root").style.width = W + "px";
+  Streamlit.setFrameHeight(totalH);
+}
+
+/* ── Canvas events ────────────────────────────────────────────────────── */
+function bindEvents() {
+  canvas.addEventListener("mousedown",  onDown);
+  canvas.addEventListener("mousemove",  onMove);
+  canvas.addEventListener("mouseup",    onUp);
+  canvas.addEventListener("mouseleave", onUp);
+  // Touch support
+  canvas.addEventListener("touchstart", e => { e.preventDefault(); onDown(e.touches[0]); }, { passive: false });
+  canvas.addEventListener("touchmove",  e => { e.preventDefault(); onMove(e.touches[0]); }, { passive: false });
+  canvas.addEventListener("touchend",   e => { e.preventDefault(); onUp(e.changedTouches[0]); });
+}
+
+function canvasXY(e) {
+  const r = canvas.getBoundingClientRect();
+  return [e.clientX - r.left, e.clientY - r.top];
+}
+
+function onDown(e) {
+  const [mx, my] = canvasXY(e);
+
+  // Check if clicking near an atom (radius 14px) → toggle that atom
+  for (let i = 0; i < atomPositions.length; i++) {
+    const { x, y } = atomPositions[i];
+    if (Math.hypot(x - mx, y - my) < 14) {
+      if (selected.has(i)) selected.delete(i);
+      else selected.add(i);
+      redraw();
+      return;
+    }
+  }
+
+  // Start lasso
+  isDrawing = true;
+  lassoPath = [[mx, my]];
+}
+
+function onMove(e) {
+  if (!isDrawing) return;
+  const [mx, my] = canvasXY(e);
+  lassoPath.push([mx, my]);
+  redraw();
+}
+
+function onUp(e) {
+  if (!isDrawing) return;
+  isDrawing = false;
+
+  if (lassoPath.length > 3) {
+    // Close lasso and select atoms inside
+    const inside = atomsInsideLasso(lassoPath);
+    if (inside.length > 0) {
+      inside.forEach(i => selected.add(i));
+    }
+  }
+  lassoPath = [];
+  redraw();
+}
+
+/* ── Point-in-polygon (ray casting) ──────────────────────────────────── */
+function pointInPolygon(px, py, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i];
+    const [xj, yj] = poly[j];
+    const intersect = ((yi > py) !== (yj > py)) &&
+                      (px < (xj - xi) * (py - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function atomsInsideLasso(path) {
+  return atomPositions
+    .map((a, i) => ({ i, x: a.x, y: a.y }))
+    .filter(a => pointInPolygon(a.x, a.y, path))
+    .map(a => a.i);
+}
+
+/* ── Drawing ──────────────────────────────────────────────────────────── */
+function redraw() {
+  ctx.clearRect(0, 0, W, H);
+
+  // Draw atom highlight halos
+  atomPositions.forEach(({ x, y }, i) => {
+    if (selected.has(i)) {
+      ctx.beginPath();
+      ctx.arc(x, y, 13, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(231, 76, 60, 0.30)";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(192, 57, 43, 0.70)";
+      ctx.lineWidth = 1.8;
+      ctx.stroke();
+    }
+  });
+
+  // Draw atom index badges
+  atomPositions.forEach(({ x, y }, i) => {
+    const isSel = selected.has(i);
+    ctx.beginPath();
+    ctx.arc(x - 14, y - 14, 7, 0, Math.PI * 2);
+    ctx.fillStyle = isSel ? "#c0392b" : "#bdc3c7";
+    ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 7px monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(i, x - 14, y - 14);
+  });
+
+  // Draw hover ring for unselected atoms (invisible, just for UX feedback)
+  // Lasso path
+  if (lassoPath.length > 1) {
+    ctx.beginPath();
+    ctx.moveTo(lassoPath[0][0], lassoPath[0][1]);
+    lassoPath.forEach(([lx, ly]) => ctx.lineTo(lx, ly));
+    ctx.closePath();
+    ctx.fillStyle   = "rgba(52, 152, 219, 0.10)";
+    ctx.fill();
+    ctx.strokeStyle = "#3498db";
+    ctx.lineWidth   = 2;
+    ctx.setLineDash([6, 3]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // Update label
+  const label = document.getElementById("sel-label");
+  if (selected.size === 0) {
+    label.textContent = "No atoms selected";
+    label.style.color = "#95a5a6";
+  } else {
+    const indices = [...selected].sort((a, b) => a - b);
+    label.textContent = `${selected.size} atom(s): ${indices.join(", ")}`;
+    label.style.color = "#c0392b";
+  }
+}
+
+/* ── Toolbar actions ──────────────────────────────────────────────────── */
+function confirmSelection() {
+  const indices = [...selected].sort((a, b) => a - b);
+  Streamlit.setComponentValue({ selected: indices, action: "confirm" });
+}
+
+function clearAll() {
+  selected.clear();
+  lassoPath = [];
+  redraw();
+  Streamlit.setComponentValue({ selected: [], action: "clear" });
+}
+
+function invertSelection() {
+  const all = new Set(atomPositions.map((_, i) => i));
+  selected = new Set([...all].filter(i => !selected.has(i)));
+  redraw();
+}
+
+function selectRings() {
+  ringAtomSets.forEach(ring => ring.forEach(i => selected.add(i)));
+  redraw();
+}
+
+function selectMurcko() {
+  murckoAtoms.forEach(i => selected.add(i));
+  redraw();
+}
+
+function selectAromatic() {
+  atomPositions.forEach((a, i) => {
+    if (a.isAromatic) selected.add(i);
+  });
+  redraw();
+}
+
+/* ── Boot ─────────────────────────────────────────────────────────────── */
+Streamlit.sendComponentReady();
+</script>
+</body>
+</html>

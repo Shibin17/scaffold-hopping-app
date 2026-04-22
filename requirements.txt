@@ -1,0 +1,13 @@
+# Core
+rdkit>=2023.3.1
+
+# Optional: docking
+# autodock-vina>=1.2.3   # pip install vina
+# openbabel>=3.1.1       # conda install -c conda-forge openbabel
+
+# Optional: RL generative model (REINVENT-style)
+# torch>=2.0.0
+# numpy>=1.24
+
+# Dev / testing
+pytest>=7.0

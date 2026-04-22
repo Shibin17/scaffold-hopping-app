@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+.installed.cfg
+lib/
+lib64/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Cached data (regenerate from ChEMBL/pipeline)
+.fragment_library_cache.pkl
+clinical_drugs.smi
+clinical_drugs_meta.json
+demo_drugs.smi
+
+# Pipeline outputs (results are generated, not source)
+results.csv
+results.sdf
+results.html
+demo_results.csv
+demo_results.sdf
+demo_results.html
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
